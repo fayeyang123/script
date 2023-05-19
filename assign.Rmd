@@ -1,0 +1,373 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*.
+
+```{r}
+start_year <- 1876
+KULbg <- "#116E8A"
+
+library(tidyverse)
+library(demography)
+library(forecast)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(astsa)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r}
+females<- read.table("females.csv", sep=",",head=TRUE)
+males<- read.table("males.csv", sep=",",head=TRUE)
+uni<- read.table("uni.csv", sep=",",head=TRUE)
+```
+
+
+#1. Data Overview
+
+First, let's check the basic structure of data, taking females as an example.
+
+```{r}
+names(females)
+str(females)
+min(females$Year)
+max(females$Year)
+min(females$Age)
+max(females$Age)
+
+```
+
+We specifically extract the data of 2019 to visualize  key variables, such as number of death,  life expectancy and mortality rates, to have an insight on the life table per gender.
+
+```{r}
+fem_2019<- filter(females, Year == 2019)
+male_2019<- filter(males, Year == 2019)
+```
+
+(1) Number of death dx
+```{r}
+g_male_dx <- ggplot(male_2019, aes(Age, dx)) + 
+  geom_step(col = "red") + 
+  theme_bw() +
+  ggtitle("Switzerland - males, 2019") + 
+  labs(y = "ex")
+
+g_dx <- g_male_dx +
+  geom_step(data = fem_2019, aes(Age, dx), col = KULbg) + 
+  theme_bw() +
+  ggtitle("Switzerland, 2019") +
+  labs(y = "dx")
+g_dx
+```
+From the graph, it is obvious that more male died at younger age(around 50-90) than female while more female died at older age(above 90) than male in 2019. 
+
+
+(2) life expectancy on 2019 for all ages
+```{r}
+g_male_ex <- ggplot(male_2019, aes(Age, ex)) + 
+  geom_line(col = "red", size = 1) + 
+  theme_bw() +
+  ggtitle("Switzerland - males, 2019") +
+  labs(y = "ex")
+
+g_ex <- g_male_ex +
+  geom_line(data = fem_2019, aes(Age, ex), col = KULbg, size = 1) + 
+  theme_bw() +
+  ggtitle("Switzerland, 2019") +
+  labs(y = "ex")
+g_ex
+```
+For all ages in general, males have lower exposure of life than females in 2019. The gap is wider in younger age and decrease consistently as age increases. 
+
+(3) Mortality rates log(qx)
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+g_male_qx <- ggplot(male_2019, aes(Age, log(qx))) + 
+  geom_point(col = "red") + 
+  geom_line(col = "red") + 
+  theme_bw() +
+  ggtitle("Switzerland - males, 2019") + 
+  labs(y = bquote(ln(q[x])))
+
+g_qx_2019 <- g_male_qx + 
+  geom_point(data = fem_2019, aes(Age, log(qx)), col = KULbg) + 
+  geom_line(data = fem_2019, aes(Age, log(qx)), col = KULbg)
+  theme_bw() +
+  ggtitle("Switzerland, 2019") + 
+  labs(y = bquote(ln(q[x]))) 
+g_qx_2019
+```
+The evolution of mortality rates over ages are aligned with the insight on above variables: the mortality rate of male is larger than females in general and the width of gap decreases as the age increases.
+
+(4) For females, the evolution of mortality rates over years
+```{r}
+g_qx <- ggplot(females_est, aes(Age, log(qx)), group = Year) + 
+  geom_line(aes(colour = Year), size = 1, linetype = 1) +
+  scale_colour_gradientn(colours = rainbow(10)) +
+  scale_x_continuous(breaks = seq(ages[1], tail(ages, 1) + 1, 10)) +
+  theme_bw() + ylab(expression("log" ~ m[x])) + xlab("Age (x)") +
+  ggtitle("Switzerland, 1876-2019") + 
+  labs(y = bquote(ln(q[x])))
+g_qx
+```
+
+
+(3) period life expectancy at selected ages over years ex
+```{r}
+females_0 <- females[females$Age == 0,]
+females_20 <- females[females$Age == 20,]
+females_40 <- females[females$Age == 40,]
+females_60 <- females[females$Age == 60,]
+females_80 <- females[females$Age == 80,]
+
+g_fem_e0 <- ggplot(females_0, aes(Year, ex)) + 
+  geom_line(col = "black", size = 0.8) +
+  geom_line(data = females_20, aes(Year, ex, col ="blue"), size = 0.8) +
+  geom_line(data = females_40, aes(Year, ex, col ="red"), size = 0.8) +
+  geom_line(data = females_60, aes(Year, ex), col = "green", size = 0.8) +
+  geom_line(data = females_80, aes(Year, ex), col = "yellow", size = 0.8) +
+  theme_bw() +
+  ggtitle("Switzerland - females") + 
+  labs(y = "period life expectancy")
+g_fem_e0
+```
+From top to down are the life expectancy of selected age: 0, 20, 40, 60, 80. The The evolution of the period life expectancy is basically align with the fact that younger people has higher life expectancy than older people and the life expectancy increases over years. What is noticeable is that growth of life expectancy of younger ages over years is also faster. 
+
+
+#2. Parameter Estimation of Lee Carter - Least Squares Approach
+
+Before we start to simulate the model, we extract the data up to 2019. 
+
+```{r}
+females_est <- filter(females, Year <= 2019 & Year >= start_year) 
+males_est <- filter(males, Year <= 2019 & Year >= start_year)
+```
+
+Then we estimate the parameters(β~x~^(1)^, β~x~^(2)^, k~t~^(2)^) of Lee Carter model.
+
+##2.1 Estimation
+
+Lee Carter model: m~x,t~ = exp (β~x~^(1)^ + β~x~^(2)^ ⋅ k~t~^(2)^)
+Least Squares of Lee Carter: ∑~x,t~(log(m~x,t~) - (β~x~^(1)^ + β~x~^(2)^ ⋅ k~t~^(2)^))^2^
+
+First we calibrate data of females.
+
+Estimation steps:
+(1) Estimate β~x~^(1)^ by using 1/T * ∑~x,t~log(m~x,t~) and visualize it with ggplot.
+```{r}
+X <- model.matrix(
+  ~ as.factor(females_est$Age) 
+  - 1)
+dim(X)
+y <- log(females_est$mx)
+y[is.infinite(y) & y < 0] <- 0 #a few of values equals to 0 causes -Inf
+
+alpha_fem_est_expl <- solve(
+  crossprod(X)) %*% 
+  t(X) %*% y
+
+alpha_fem_est <- lm(
+  y ~ -1 + 
+    as.factor(females_est$Age))$coef
+
+data <- tibble(age = 0:110, fit = alpha_fem_est)
+g_fem_alpha <- ggplot(data) + 
+  geom_point(aes(age, alpha_fem_est)) + 
+  geom_line(aes(age, alpha_fem_est), col = "black") +
+  theme_bw() +
+  ggtitle("Switzerland - females, 1876-2019") + 
+  labs(y = bquote(hat(beta)[x]^"(1)")) 
+g_fem_alpha
+```
+
+(2) Estimatethe starting value of k~t~^(2)^ by defining Z = log(m~x,t~) - β~x~^(1)^ and visualize it with ggplot.
+
+```{r}
+Z <- log(females_est$mx) - 
+  alpha_fem_est[females_est$Age - 
+              min(females_est$Age) + 1]
+Z[is.infinite(Z) & Z < 0] <- 0#a few of values equals to 0 causes -Inf
+
+X <- model.matrix(~ as.factor(females_est$Year) - 1)
+
+kappa_fem_est_expl <- solve(crossprod(X)) %*% t(X) %*% Z
+
+kappa_fem_est <- lm(
+  Z ~ -1 + 
+    as.factor(females_est$Year))$coef 
+
+
+data <- tibble(year = start_year:2019, fit = kappa_fem_est)
+g_fem_kappa <- ggplot(data) + geom_point(aes(year, kappa_fem_est)) + 
+  geom_line(aes(year, kappa_fem_est), col = "black") +
+  theme_bw() +
+  ggtitle("Switzerland - females, 1876-2019, starting values") + 
+  labs(y = bquote(hat(kappa)[t]^"(2)")) 
+g_fem_kappa
+```
+
+
+(3) Estimate the starting value of β~x~^(2)^ based on fitted kappa and visualize it with ggplot.
+
+```{r}
+var_kappa <- kappa_fem_est[females_est$Year - 
+                         min(females_est$Year) + 1]
+
+X <- model.matrix(~ 
+                    as.factor(females_est$Age):var_kappa 
+                  - 1)
+
+beta_fem_est_expl  <- solve(crossprod(X)) %*% t(X) %*% Z 
+
+beta_fem_est <- lm(
+  Z ~ -1 + 
+    as.factor(females_est$Age):var_kappa)$coef 
+
+
+data <- tibble(age = 0:110, fit = beta_fem_est)
+g_fem_beta <- ggplot(data) + geom_point(aes(age, beta_fem_est)) + 
+  geom_line(aes(age, beta_fem_est), col = "black") +
+  theme_bw() +
+  ggtitle("Switzerland - females, 1876-2019, starting value") + 
+  labs(y = bquote(hat(beta)[x]^"(2)")) 
+g_fem_beta
+```
+```{r}
+grid.arrange(g_fem_alpha, g_fem_kappa, g_fem_beta, nrow=2, ncol=2)
+```
+
+(4) Convergence: update k~t~^(2)^ and β~x~^(2)^ through iterative LS strategy.
+
+Due to the extremely long run times, here set an extra stop condition iteration <= 5000.
+```{r}
+converged = F
+iter      = 1
+
+while(!converged && iter <= 5000){  
+  beta_est_old  = beta_fem_est
+  kappa_est_old = kappa_fem_est
+  
+  # (2): estimate kappa's
+  var_beta = beta_fem_est[females_est$Age - min(females_est$Age) + 1]
+  X        = model.matrix(~ as.factor(females_est$Year):var_beta - 1)
+  kappa_est = solve(crossprod(X)) %*% t(X) %*% Z
+  
+  # (3): estimate beta's
+  var_kappa = kappa_fem_est[females_est$Year - min(females_est$Year) + 1]
+  X         = model.matrix(~ as.factor(females_est$Age):var_kappa - 1)
+  beta_est   = solve(crossprod(X)) %*% t(X) %*% Z 
+  
+  # stopping criterion
+  converged = 
+    max(abs(beta_est - beta_est_old) / abs(beta_est_old), abs(kappa_est - kappa_est_old) / abs(kappa_est_old)) < 0.01
+  iter = iter + 1
+  if(iter %% 1e2 == 0)
+    cat("\n\nIteration number", iter, "\n\n")
+  
+}
+```
+
+k~t~^(2)^ after convergence
+```{r}
+data <- tibble(year = 1876:2019, fit = kappa_est, init = kappa_fem_est_expl)
+g_fem_conv_kappa <- ggplot(data) + geom_point(aes(year, fit)) + 
+  geom_line(aes(year, fit), col = "black") +
+  geom_line(aes(year, init), col = "red") +
+  theme_bw() +
+  ggtitle("Switzerland - females, 1876-2019, starting + final values") + 
+  labs(y = bquote(hat(kappa)[t]^"(2)")) 
+g_fem_conv_kappa
+```
+
+β~x~^(2)^ after convergence
+```{r}
+data <- tibble(age = 0:110, fit = beta_est, init = beta_fem_est_expl)
+g_fem_conv_beta <- ggplot(data) + geom_point(aes(age, fit)) + 
+  geom_line(aes(age, fit), col = "black") +
+  geom_line(aes(age, init), col = "red") +
+  theme_bw() +
+  ggtitle("Switzerland - females, 1876-2019, starting + final values") + 
+  labs(y = bquote(hat(beta)[x]^"(2)")) 
+g_fem_conv_beta
+```
+```{r}
+grid.arrange(g_fem_conv_beta, g_fem_conv_kappa, ncol=2)
+```
+
+(5) Finally, we make sure the parameter estimates satisfy the constraints:
+ ∑~t~k~t~^(2)^ = 0
+ ∑~x~β~x~^(2)^ = 1
+
+```{r}
+beta_fem_est_LS  = beta_est / sum(beta_est)
+kappa_fem_est_LS = (kappa_est - mean(kappa_est)) * sum(beta_est)
+alpha_fem_est_LS = alpha_fem_est + beta_est * mean(kappa_est)
+
+sum(beta_fem_est_LS) 
+sum(kappa_fem_est_LS)
+```
+The process is identical for males. Hence here only show outcomes.
+
+(1) (2) (3) Estimate parameters
+```{r}
+grid.arrange(g_male_alpha, g_male_kappa, g_male_beta, nrow=2, ncol=2)
+```
+
+(4) Convergence
+```{r}
+grid.arrange(g_male_conv_beta, g_male_conv_kappa, ncol=2)
+```
+
+
+(5) Check constraints
+```{r}
+sum(beta_male_est_LS) 
+sum(kappa_male_est_LS)
+```
+## 2.2 Projection
+
+To implement projection of the whole model we need to discuss the projection of Kappa first. All above results are considered within the calibration period T = {1876, ..., 2019} which the start year is the earliest year that data is available. However, data back to too long time ago can be less valuable in constructing the model, the performance of the model can be boosted by choosing a better starting year. 
+Hence, here we use random walking with drift to forecast the kappa and shorten the calibration period by looking for the starting year that achieves stability. 
+
+```{r}
+head(ar1_coef_fem)
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```

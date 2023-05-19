@@ -1,0 +1,478 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+In this report, we mainly focus on the illustration of projecting mortality rates of females of Switzerland while using the figures of males for neccessary comparison.
+
+
+```{r}
+start_year <- 1876
+KULbg <- "#116E8A"
+
+library(tidyverse)
+library(demography)
+library(forecast)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(astsa)
+library(MultiMoMo)
+```
+
+
+```{r}
+females<- read.table("females.csv", sep=",",head=TRUE)
+males<- read.table("males.csv", sep=",",head=TRUE)
+```
+
+
+#1. Data Overview
+
+First, let's check the basic structure of data, taking females as an example.
+
+```{r}
+names(females)
+str(females)
+min(females$Year)
+max(females$Year)
+min(females$Age)
+max(females$Age)
+```
+
+We specifically extract the data of 2019 to visualize  key variables, such as number of death,  life expectancy and mortality rates, to have an insight on the life table per gender.
+
+```{r}
+fem_2019<- filter(females, Year == 2019)
+male_2019<- filter(males, Year == 2019)
+```
+
+(1) Number of death dx
+```{r}
+g_male_dx <- ggplot(male_2019, aes(Age, dx)) + 
+  geom_step(col = "red") + 
+  theme_bw() +
+  ggtitle("Switzerland - males, 2019") + 
+  labs(y = "ex")
+
+g_dx <- g_male_dx +
+  geom_step(data = fem_2019, aes(Age, dx), col = KULbg) + 
+  theme_bw() +
+  ggtitle("Switzerland, 2019") +
+  labs(y = "dx")
+g_dx
+```
+From the graph, it is obvious that more male died at younger age(around 50-90) than female while more female died at older age(above 90) than male in 2019. 
+
+
+(2) life expectancy on 2019 for all ages
+```{r}
+g_male_ex <- ggplot(male_2019, aes(Age, ex)) + 
+  geom_line(col = "red", size = 1) + 
+  theme_bw() +
+  ggtitle("Switzerland - males, 2019") +
+  labs(y = "ex")
+
+g_ex <- g_male_ex +
+  geom_line(data = fem_2019, aes(Age, ex), col = KULbg, size = 1) + 
+  theme_bw() +
+  ggtitle("Switzerland, 2019") +
+  labs(y = "ex")
+g_ex
+```
+For all ages in general, males have lower exposure of life than females in 2019. The gap is wider in younger age and decrease consistently as age increases. 
+
+(3) Mortality rates log(qx)
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+g_male_qx <- ggplot(male_2019, aes(Age, log(qx))) + 
+  geom_point(col = "red") + 
+  geom_line(col = "red") + 
+  theme_bw() +
+  ggtitle("Switzerland - males, 2019") + 
+  labs(y = bquote(ln(q[x])))
+
+g_qx_2019 <- g_male_qx + 
+  geom_point(data = fem_2019, aes(Age, log(qx)), col = KULbg) + 
+  geom_line(data = fem_2019, aes(Age, log(qx)), col = KULbg)
+  theme_bw() +
+  ggtitle("Switzerland, 2019") + 
+  labs(y = bquote(ln(q[x]))) 
+g_qx_2019
+```
+The evolution of mortality rates over ages are aligned with the insight on above variables: the mortality rate of male is larger than females in general and the width of gap decreases as the age increases.
+
+(4) For females, the evolution of mortality rates over years
+```{r}
+g_qx <- ggplot(females_est, aes(Age, log(qx)), group = Year) + 
+  geom_line(aes(colour = Year), size = 1, linetype = 1) +
+  scale_colour_gradientn(colours = rainbow(10)) +
+  scale_x_continuous(breaks = seq(ages[1], tail(ages, 1) + 1, 10)) +
+  theme_bw() + ylab(expression("log" ~ m[x])) + xlab("Age (x)") +
+  ggtitle("Switzerland, 1876-2019") + 
+  labs(y = bquote(ln(q[x])))
+g_qx
+```
+
+(3) period life expectancy at selected ages over years ex
+```{r}
+females_0 <- females[females$Age == 0,]
+females_20 <- females[females$Age == 20,]
+females_40 <- females[females$Age == 40,]
+females_60 <- females[females$Age == 60,]
+females_80 <- females[females$Age == 80,]
+
+g_fem_e0 <- ggplot(females_0, aes(Year, ex)) + 
+  geom_line(col = "black", size = 0.8) +
+  geom_line(data = females_20, aes(Year, ex, col ="blue"), size = 0.8) +
+  geom_line(data = females_40, aes(Year, ex, col ="red"), size = 0.8) +
+  geom_line(data = females_60, aes(Year, ex), col = "green", size = 0.8) +
+  geom_line(data = females_80, aes(Year, ex), col = "yellow", size = 0.8) +
+  theme_bw() +
+  ggtitle("Switzerland - females") + 
+  labs(y = "period life expectancy")
+g_fem_e0
+```
+From top to down are the life expectancy of selected age: 0, 20, 40, 60, 80. The The evolution of the period life expectancy is basically align with the fact that younger people has higher life expectancy than older people and the life expectancy increases over years. What is noticeable is that growth of life expectancy of younger ages over years is also faster. 
+Moreover, it also shown the trend is quite unstable before around 1930.
+
+#2. Parameter Estimation of Lee Carter - Poisson MLE Approach
+
+##2.1. Initial data construction
+
+Before we start to simulate the model, we extract the data up to 2019 and start from 1876 which is the earliest year available. 
+
+```{r}
+start_year <- 1876
+end_year <- 2019
+years <- start_year:end_year
+females_est <- filter(females, Year <= end_year & Year >= start_year)
+females_est_sub  <- subset(females_est, Age <= 90)
+```
+
+Then we estimate the parameters(β~x~^(1)^, β~x~^(2)^, k~t~^(2)^) of Lee Carter model.
+Where Lee Carter model: 
+m~x,t~ = exp (β~x~^(1)^ + β~x~^(2)^ ⋅ k~t~^(2)^)
+and Poisson model:
+Dx,t ∼ POI(ex,t ⋅ μx,t)
+μx,t = exp (β(1)x + β(2)x ⋅ κ(2)t).
+The log-likelihood then follows: 
+L(β~x~^(1)^, β~x~^(2)^, k~t~^(2)^) = ∑~x,t~(d~x,t~(β~x~^(1)^ + β~x~^(2)^ * k~t~^(2)^) - e~x,t~(β~x~^(1)^ + β~x~^(2)^ * k~t~^(2)^) + c
+
+Hence, we need the observation d~x,t~ and e~x,t~ to construct the model.
+
+The number of death d~x,t~ is directly available from the data of HMD.
+```{r}
+dtx <- matrix(females_est_sub$dx, nrow = length(years), byrow = TRUE)
+for(i in 1:length(start_year:end_year)){
+  for(j in 1:length(0:90))
+    if(dtx[i,j] == 0){
+      dtx[i,j] <- dtx[i,j-1]
+    }
+}
+dim(dtx)
+```
+
+The exposure of risk e~x,t~ can be computed by applying e~x,t~ = d~x,t~/m~x,t~.
+```{r}
+etx <- dtx / matrix(females_est_sub$mx, nrow = length(years), byrow = TRUE)
+etx[is.infinite(etx)] <- 0
+etx[is.na(etx)] <- 0
+for(i in 1:length(start_year:end_year)){
+  for(j in 1:length(0:90))
+  if(etx[i,j] == 0){
+    etx[i,j] <- etx[i,j-1]
+  }
+}
+dim(etx)
+```
+We also extract the central death rate m~x,t~ for the later calibration.
+```{r}
+mtx <- matrix(females_est_sub$mx, nrow = length(years), byrow = TRUE)
+for(i in 1:length(start_year:end_year)){
+  for(j in 1:length(0:90))
+    if(mtx[i,j] == 0){
+      mtx[i,j] <- mtx[i,j-1]
+    }
+}
+dim(mtx)
+```
+Then we plot the data to have an insight.
+
+```{r}
+df <- expand.grid(Year = years, Age = ages)
+df$rates <- as.vector(mtx)
+df <- filter(df, df$rates > 0)
+df$rates <- log(df$rates)
+names(df) <- c("Year", "Age", "logRate")
+
+p_mx_1876 <- ggplot(df, aes(x = Age, y = logRate, group = Year)) + 
+  geom_line(aes(colour = Year), linewidth = 1, linetype = 1) +
+  scale_colour_gradientn(colours = rainbow(10)) +
+  scale_x_continuous(breaks = seq(ages[1], tail(ages, 1) + 1, 10)) +
+  theme_bw() + ylab(expression("log" ~ m[x])) + xlab("Age (x)") +
+  ggtitle("Switzerland, 1876-2019")
+p_mx_1876
+```
+From which we can see that in general the death mortality rates is constantly decreasing over years.
+
+Then we set the starting year as 1971. The determination of starting year will be discussed later.
+```{r}
+start_year <- 1971
+years <- start_year:end_year
+p_mx_1971
+```
+
+##2.2. Data construction
+
+We fit the model by applying the function fit701 from the fit.models.R sript which offers the implementations to optimize the Poisson likelihood with univariate Newton_Raphson steps.
+```{r}
+source('fitModels.R')
+LCfit701 <- fit701(ages, years, etx, dtx, matrix(1, length(years), length(ages)))
+names(LCfit701)
+```
+Then we have the fitted outcome:
+```{r}
+grid.arrange(g_1, g_2, g_3, ncol = 2)
+
+```
+Check the constraints.
+
+```{r}
+sum(LCfit701$beta2)
+sum(LCfit701$kappa2)
+```
+
+#3. Projection of Kappa
+
+##3.1. Determination of start year
+
+All above results are considered on the calibration period T = {1876, ..., 2019} which the start year is the earliest year that data is available. However, data back to too long time ago can be less valuable in constructing the model, the performance of the model can be boosted by choosing a better starting year. 
+Here, we propose the following steps on determining the starting year.
+
+###3.1.1 Applying AR(1) and Random Walking with Drift
+By fixing the model used to calibrate kappa, we change the starting year to compare the performance of models based on different data range.
+
+####3.1.1.1 AR(1)
+Applying the AR(1) process helps us to determine the starting year of the model by checking the stability that if the absolute number of parameter Φ is smaller than 1.
+
+```{r paged.print=TRUE}
+time_series <- Arima(LCfit701$kappa2, order = c(1, 0, 0), include.drift = TRUE)
+list3 <- append(list3, time_series$coef)
+
+ar1_coef_fem <- data.frame(matrix(list3, ncol = 3, byrow = TRUE))
+names(ar1_coef_fem) <- c("ar1", "intercept", "drift")
+rownames(ar1_coef_fem) <- c(1876:2000)
+head(ar1_coef_fem)
+```
+
+```{r}
+max(abs(as.numeric(ar1_coef_fem$ar1)))
+```
+Repeat for males.
+```{r}
+head(ar1_coef_male)
+```
+
+```{r}
+max(abs(as.numeric(ar1_coef_male$ar1)))
+```
+From the results displayed above, all the absolute number of parameter Φ of subsets with different starting year is smaller than 1 that provides no value on determination of the starting year in this case.
+
+####3.1.1.2 Random Walking with Drift
+
+We repeat the above steps instead of using Random Walking with Drift which is also ARIMA(0,1,0) and compare the AIC value of each subsets with different starting years.
+```{r}
+time_series <- Arima(LCfit701$kappa2, order = c(0, 1, 0), include.drift = TRUE)
+list4 <- append(list4, time_series$aic)
+rm_aic_fem <- as.numeric(list4)
+rm_aic_fem <- diff(rm_aic_fem, lag = 1)
+#[1] 42 43 45 47 54 59 65 68 74 86
+which(rm_aic_fem %in% head(sort(rm_aic_fem, decreasing = FALSE), n = 10))
+#[1] 42 43 45 68 86 -- 1918, 1919, 1944, 1921, 1952
+which(rm_aic_fem %in% head(sort(rm_aic_fem, decreasing = FALSE), n = 5))
+```
+```{r}
+#[1] 42 43 45 53 59 65 68 75 86 88
+which(rm_aic_male %in% head(sort(rm_aic_male, decreasing = FALSE), n = 10))
+#[1] 42 43 45 68 86 -- 1918, 1919, 1944, 1921, 1952
+which(rm_aic_male %in% head(sort(rm_aic_male, decreasing = FALSE), n = 5))
+```
+Since we observe from section 1 data overview that the trend on life expectancy is not stable before at least 1930 and combining with the results of males, we choose the starting years 1944 and 1952 as candidates which model has relatively small AIC.
+
+In addition to that, it is proposed that 1971 is also taken as one of the candidate starting years which is found during random modeling-testing.
+
+Therefore, the candidate starting years here chosen as: 1944, 1952, 1971.
+
+###3.1.2 Model selection
+By fixing the model based on candidate starting years, we apply different the ARIMA models to compare the performance through p-value and AIC.
+
+####3.1.2.1 Enlighten of ARIMA model selection
+
+It is apparently unrealistic to test all the ARIMA models without any constraint. To enlighten the reasonable models we can consider to finalize the selection, it is suggested to apply the function **auto.arima** to all the subsets with different starting year(1876:2000) and store the recommended ARIMA orders into another dataset through **arimaorder**.
+
+
+```{r}
+start_year <- 1944
+start_year <- 1952
+start_year <- 1971
+LCfit701_1944_fem <- fit701(ages, years, etx, dtx, matrix(1, length(years), length(ages)))
+LCfit701_1952_fem <- fit701(ages, years, etx, dtx, matrix(1, length(years), length(ages)))
+LCfit701_1971_fem <- fit701(ages, years, etx, dtx, matrix(1, length(years), length(ages)))
+```
+
+```{r}
+time_series <- auto.arima(LCfit701$kappa2)
+list6 <- append(list6, arimaorder(time_series))
+  
+auto_model_fem <- data.frame(t(matrix(list6, nrow = 3, byrow = TRUE)))
+names(auto_model_fem) <- c("p", "d", "q")
+rownames(auto_model_fem) <- c(1876:2000)
+head(auto_model_fem)
+```
+The ARIMA models mostly recommended over all starting years with each order smaller than 2. i.e. p,d,q <= 2
+
+Hence, we compare these ARIMA models based on subsets with candidate starting years by AIC values and p-values and other relative indications through **sarima**.
+
+Following models are what found most valuable with different differencing levels.
+
+d = 0
+```{r}
+Arima(LCfit701_1944_fem$kappa2, order = c(1,0,2), include.drift = TRUE)$aic
+```
+d = 1
+```{r}
+Arima(LCfit701_1944_fem$kappa2, order = c(2,1,1), include.drift = TRUE)$aic
+```
+```{r}
+Arima(LCfit701_1952_fem$kappa2, order = c(2,1,1), include.drift = TRUE)$aic
+```
+```{r}
+Arima(LCfit701_1971_fem$kappa2, order = c(2,1,1), include.drift = TRUE)$aic
+```
+Which has the lowest AIC value and nicer p-value and other indication results like normality(shown below)
+
+d = 2
+```{r warning=FALSE}
+Arima(LCfit701_1952_fem$kappa2, order = c(2,2,2), include.drift = TRUE)$aic
+```
+```{r warning=FALSE}
+Arima(LCfit701_1971_fem$kappa2, order = c(2,2,2), include.drift = TRUE)$aic
+```
+
+```{r}
+sarima(LCfit701_1971_fem$kappa2,2,1,1)
+```
+On overall, after tried all the possible ARIMA models(each orders <= 2) for candidate datasets, the general performance is best when differencing level d = 1 and is better on models for starting year 1944 and best on models for sratring year 1971.
+
+In conclusion, from all above steps, the starting year is chosen as 1971 and the time series model for kappa calibration is selected as ARIMA(2,1,1).
+
+```{r}
+LCfit701 <- LCfit701_1971_fem
+time_series <- Arima(LCfit701$kappa2, order = c(2, 1, 1), include.drift = TRUE)
+time_series
+```
+----------------------------------------
+
+```{r}
+yv_spec <- years
+alpha.x	  <- LCfit701_1971_fem$beta1
+beta.x 	  <- LCfit701_1971_fem$beta2		  
+kappa.t   <- LCfit701_1971_fem$kappa2
+LCfit701_1971_fem$mtx <- t(exp(rep(alpha.x, each = 1, times = length(yv_spec)) + beta.x%o%kappa.t))
+```
+
+
+```{r}
+source('simModels.R')
+
+sim_LC = sim2001(
+  xx = LCfit701_1971_fem$x,
+  yy = LCfit701_1971_fem$y,
+  beta1v = LCfit701_1971_fem$beta1,
+  beta2v = LCfit701_1971_fem$beta2,
+  kappa2v = LCfit701_1971_fem$kappa2,
+  nsim = 10000,
+  tmax = 172, # 52 + 120
+  nyears = length(years)
+)
+
+names(sim_LC)
+```
+
+
+```{r}
+m_rate <- sim_LC$qaa
+M.tx <- LCfit701_1971_fem$mtx
+repeated_A <- replicate(10001, M.tx, simplify = FALSE)
+M.tx <- array(unlist(repeated_A), dim = c(dim(M.tx), length(repeated_A)))
+
+M.tx <- aperm(M.tx, c(2, 3, 1))
+testing <- aperm(m_rate, c(1, 3, 2))
+C <- abind(M.tx, testing)
+m_rate <- aperm(C, c(1, 3, 2))
+dim(m_rate)
+
+```
+
+
+```{r}
+le_yv   <- 1971:2071
+le_ages <- c(0,65)
+le_type <- c("per", "coh")
+dimnames(m_rate) <- list(0:90, 1971:2191, 1:10001)
+le_fem <- life_exp(le_yv, le_type, le_ages, m_rate)
+names(le_fem)
+```
+
+
+```{r}
+dimnames(dtx) <- list(1971:2019, 0:90)
+dimnames(etx) <- list(1971:2019, 0:90)
+
+kannisto_nages <- 30
+kannisto_nobs  <- 11
+m_obs_cl <- close_obs_death_rates(dtx, etx, kannisto_nages, kannisto_nobs)
+
+```
+
+
+```{r}
+le_e0_19 <- plot_life_exp(le_yv, 0, le_fem, "Female", le_type, "99%", m_obs = m_obs_cl)
+le_e0_19
+```
+
+
+```{r}
+le_e65_19 < plot_life_exp(le_yv, 65, le_fem, "Female", le_type, "99%", m_obs = m_obs_cl)
+le_e65_19
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
